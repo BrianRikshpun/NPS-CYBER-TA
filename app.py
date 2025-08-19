@@ -1,6 +1,6 @@
 # app.py
-import io
 import os
+import io
 import base64
 from typing import List, Tuple, Any, Dict, Union
 from PIL import Image
@@ -8,6 +8,41 @@ import gradio as gr
 
 from agent import Agent, AgentConfig, ChatMessage
 from backends import make_backend
+
+# -------------------------------------------------
+# Header config (logo + centered title)
+# -------------------------------------------------
+LOGO_URL = os.getenv(
+    "NPS_LOGO_URL",
+    "https://upload.wikimedia.org/wikipedia/en/1/1b/Naval_Postgraduate_School_seal.png"
+)
+
+CUSTOM_CSS = """
+#header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center; /* centers the title */
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color-primary);
+  background: var(--body-background-fill);
+}
+#header .logo {
+  position: absolute; /* pin to left while title stays centered */
+  left: 16px;
+  height: 48px;
+  width: auto;
+}
+#header .title {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+@media (max-width: 640px) {
+  #header .title { font-size: 20px; }
+  #header .logo { height: 36px; }
+}
+"""
 
 # -----------------------------
 # Image Agent (OpenAI DALL·E / gpt-image-1)
@@ -35,19 +70,19 @@ class ImageAgent:
             size=self.size,
             n=1,
         )
-        b64 = resp.data[0].b64_json  # base64-encoded PNG
+        b64 = resp.data[0].b64_json
         raw = base64.b64decode(b64)
         return Image.open(io.BytesIO(raw)).convert("RGB")
 
 
-# -----------------------------------------
+# -----------------------------
 # Helpers
-# -----------------------------------------
+# -----------------------------
 def is_image_request(text: str) -> Tuple[bool, str]:
     """
     Only generate images when explicitly requested.
-    Supported prefixes:
-      /image <prompt>   |  image: <prompt>  |  img: <prompt>  |  /img <prompt>
+    Prefixes:
+      /image <prompt>  |  image: <prompt>  |  img: <prompt>  |  /img <prompt>
     """
     if not text:
         return False, text
@@ -64,12 +99,13 @@ def is_image_request(text: str) -> Tuple[bool, str]:
 def build_chat_agent(
     provider: str,
     ollama_model: str,
+    openai_model: str,
     temperature: float,
     max_tokens: Union[int, None],
 ) -> Agent:
     cfg = AgentConfig(
         provider=("ollama" if provider == "ollama" else "openai"),
-        model=(ollama_model if provider == "ollama" else "gpt-4o-mini"),
+        model=(ollama_model if provider == "ollama" else openai_model),
         temperature=temperature,
         max_tokens=max_tokens,
         system_prompt="You are a concise, helpful teaching assistant. Prefer stepwise reasoning and cite equations when relevant.",
@@ -81,7 +117,7 @@ def build_image_agent(size: str = "1024x1024") -> ImageAgent:
     return ImageAgent(model="gpt-image-1", size=size)
 
 
-# -------------- Chatbot (messages) helpers --------------
+# ------ Chatbot (messages) helpers ------
 def user_msg(content: str) -> Dict[str, Any]:
     return {"role": "user", "content": content}
 
@@ -89,42 +125,38 @@ def assistant_text(content: str) -> Dict[str, Any]:
     return {"role": "assistant", "content": content}
 
 
-# -----------------------------------------
+# -----------------------------
 # Main handler
-#   - display_history: List[dict] with {'role':..., 'content':...}  (for Chatbot type="messages")
-#   - llm_context:     List[ChatMessage] used by Agent for context
-# Returns FOUR values to match outputs=[chatbot, image_output, history_state, messages_state]
-# -----------------------------------------
+# Returns FOUR outputs to match: [chatbot, image, history_state, messages_state]
+# -----------------------------
 def chat_or_image(
     user_text: str,
     display_history: List[Dict[str, Any]],
     llm_context: List[ChatMessage],
+    provider: str,
     ollama_model: str,
+    openai_model: str,
     temperature: float,
     max_tokens: Union[int, None],
-    provider: str,
     img_size: str,
 ):
     user_text = user_text or ""
     wants_image, prompt = is_image_request(user_text)
 
-    # Ensure states
     display_history = display_history or []
     llm_context = llm_context or []
 
-    # Append user to both histories
+    # Append user's turn
     display_history.append(user_msg(user_text))
     llm_context.append(ChatMessage(role="user", content=user_text))
 
     if wants_image:
-        # IMAGE path: generate image; add a text breadcrumb to the chat
         try:
             img_agent = build_image_agent(size=img_size)
             img = img_agent.generate(prompt)
             note = f"[Generated image for: {prompt}]"
             display_history.append(assistant_text(note))
             llm_context.append(ChatMessage(role="assistant", content=note))
-            # Return 4 values: chatbot msgs, image, chatbot state, llm state
             return display_history, img, display_history, llm_context
         except Exception as e:
             err = f"Image error: {e}"
@@ -132,10 +164,15 @@ def chat_or_image(
             llm_context.append(ChatMessage(role="assistant", content=err))
             return display_history, None, display_history, llm_context
 
-    # Otherwise: normal chat
-    agent = build_chat_agent(provider=provider, ollama_model=ollama_model, temperature=temperature, max_tokens=max_tokens)
+    # Otherwise chat
+    agent = build_chat_agent(
+        provider=provider,
+        ollama_model=ollama_model,
+        openai_model=openai_model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+    )
     try:
-        # Provide prior context except the latest user (Agent.chat appends user internally)
         reply = agent.chat(user_text, context=llm_context[:-1], stream=False)
         display_history.append(assistant_text(reply))
         llm_context.append(ChatMessage(role="assistant", content=reply))
@@ -148,80 +185,79 @@ def chat_or_image(
 
 
 def clear_all():
-    # chatbot messages, image, chatbot state (same as messages), llm state
+    # chatbot messages, image, chatbot state (same), llm state
     return [], None, [], []
 
 
-# -----------------------------------------
+# -----------------------------
 # UI
-# -----------------------------------------
-with gr.Blocks(title="Multi-Agent Chat (Ollama + DALL·E)") as demo:
-    gr.Markdown(
-        """
-        # 🧑‍🏫 Multi-Agent Chat (Open-Source + DALL·E)
-        - **Chat agent**: open-source via **Ollama** (e.g., Llama 3).  
-        - **Image agent**: **OpenAI DALL·E** (via `gpt-image-1`).  
-        - To generate an image, **explicitly** ask using one of:
-          - `/image a diagram of bias–variance tradeoff`
-          - `image: a logo with a rocket and book`
-          - `img: a cute llama wearing glasses`
+# -----------------------------
+with gr.Blocks(title="Multi-Agent Chat (Ollama + DALL·E)", css=CUSTOM_CSS) as demo:
+    # ====== HEADER ======
+    gr.HTML(
+        f"""
+        <div id="header">
+          <img class="logo" src="{LOGO_URL}" alt="Naval Postgraduate School Logo" />
+          <div class="title">NPS - CYBER - TA</div>
+        </div>
         """
     )
 
+    # ====== PARAMETERS (TOP) ======
+    with gr.Row():
+        provider = gr.Radio(choices=["ollama", "openai"], value="ollama", label="Chat provider", scale=1)
+        ollama_model = gr.Textbox(value="llama3.2:3b-instruct-q4_K_M", label="Ollama model", scale=2)
+        openai_model = gr.Dropdown(
+            choices=["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"],
+            value="gpt-4o-mini",
+            label="OpenAI model",
+            scale=2
+        )
+        temperature = gr.Slider(0.0, 1.5, value=0.2, step=0.05, label="Temperature", scale=1)
+        max_tokens = gr.Number(value=None, precision=0, label="Max new tokens", scale=1)
+        img_size = gr.Dropdown(choices=["512x512", "768x768", "1024x1024"], value="1024x1024", label="Image size", scale=1)
+
+    # ====== MAIN CONTENT (SIDE BY SIDE) ======
     with gr.Row():
         with gr.Column(scale=3):
-            # Use messages-format (OpenAI style)
-            chatbot = gr.Chatbot(height=520, type="messages")
-            image_output = gr.Image(height=520, label="Generated Image", visible=True)
-            user_box = gr.Textbox(placeholder="Type a message. For images, use `/image <prompt>`", label="Your message")
-            send_btn = gr.Button("Send", variant="primary")
-            clear_btn = gr.Button("Clear")
-
+            chatbot = gr.Chatbot(height=520, type="messages", label="Chat Assistant")
         with gr.Column(scale=2):
-            gr.Markdown("### Settings")
-            provider = gr.Radio(choices=["ollama", "openai"], value="ollama", label="Chat provider")
-            ollama_model = gr.Textbox(value="llama3:latest", label="Ollama model (chat)")
-            temperature = gr.Slider(0.0, 1.5, value=0.2, step=0.05, label="Temperature (chat)")
-            max_tokens = gr.Number(value=None, precision=0, label="Max new tokens (chat) — optional")
-            img_size = gr.Dropdown(choices=["512x512", "768x768", "1024x1024"], value="1024x1024", label="Image size")
+            image_output = gr.Image(height=520, label="Image Generator")
 
-            gr.Markdown(
-                """
-                **Requirements**
-                - For **Ollama chat**: install [Ollama](https://ollama.com), run `ollama pull llama3:latest`.
-                - For **images**: set `OPENAI_API_KEY` and ensure your org is verified for `gpt-image-1`.
-                """
-            )
+    # ====== INPUT / CONTROLS ======
+    with gr.Row():
+        user_box = gr.Textbox(placeholder="Type a message. For images, use `/image <prompt>`", label="Your message", scale=5)
+        send_btn = gr.Button("Send", variant="primary", scale=1)
+        clear_btn = gr.Button("Clear", scale=1)
 
-    # States:
-    # - history_state (messages-format) mirrors what Chatbot shows
-    # - messages_state (ChatMessage list) is used as LLM context
-    history_state = gr.State([])      # List[dict]: [{"role": "...", "content": "..."}]
-    messages_state = gr.State([])     # List[ChatMessage]
+    # States mirror visible components
+    history_state = gr.State([])   # messages-format list for Chatbot
+    messages_state = gr.State([])  # List[ChatMessage] for LLM context
 
-    def _submit(user_text, hist_msgs, llm_msgs, ollama_model, temperature, max_tokens, provider, img_size):
-        # MUST return 4 values to match outputs
-        return chat_or_image(user_text, hist_msgs, llm_msgs, ollama_model, temperature, max_tokens, provider, img_size)
+    def _submit(user_text, hist_msgs, llm_msgs, provider, ollama_model, openai_model, temperature, max_tokens, img_size):
+        return chat_or_image(
+            user_text, hist_msgs, llm_msgs,
+            provider, ollama_model, openai_model,
+            temperature, max_tokens, img_size
+        )
 
-    # Send button
+    # Wire up actions
     send_btn.click(
         _submit,
-        inputs=[user_box, history_state, messages_state, ollama_model, temperature, max_tokens, provider, img_size],
+        inputs=[user_box, history_state, messages_state, provider, ollama_model, openai_model, temperature, max_tokens, img_size],
         outputs=[chatbot, image_output, history_state, messages_state],
     ).then(lambda: "", outputs=user_box)
 
-    # Enter key
     user_box.submit(
         _submit,
-        inputs=[user_box, history_state, messages_state, ollama_model, temperature, max_tokens, provider, img_size],
+        inputs=[user_box, history_state, messages_state, provider, ollama_model, openai_model, temperature, max_tokens, img_size],
         outputs=[chatbot, image_output, history_state, messages_state],
     ).then(lambda: "", outputs=user_box)
 
-    # Clear
     clear_btn.click(
         clear_all,
         outputs=[chatbot, image_output, history_state, messages_state]
     )
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(share=True)
