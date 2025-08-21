@@ -215,9 +215,9 @@ with gr.Blocks(title="NPS - CYBER - TA", css=CUSTOM_CSS) as demo:
 
     # Chat params (added Ollama Base URL)
     with gr.Row():
-        provider = gr.Radio(choices=["ollama", "openai"], value="ollama", label="Chat provider", scale=1)
-        ollama_model = gr.Textbox(value="llama3.2:1b-instruct-q4_K_M", label="Ollama model", scale=2)
-        ollama_url = gr.Textbox(value="http://127.0.0.1:11434", label="Ollama Base URL", scale=2)  # NEW
+        provider = gr.Radio(choices=["ollama", "openai"], value="ollama", label="Chat provider")
+        ollama_url = gr.Textbox(value=os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434"), label="Ollama Base URL")
+        ollama_model = gr.Textbox(value="llama3.2:1b-instruct-q4_K_M", label="Ollama model")
         openai_model = gr.Dropdown(choices=["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"], value="gpt-4o-mini", label="OpenAI model", scale=2)
         temperature = gr.Slider(0.0, 1.5, value=0.2, step=0.05, label="Temperature", scale=1)
         max_tokens = gr.Number(value=None, precision=0, label="Max new tokens", scale=1)
@@ -230,8 +230,8 @@ with gr.Blocks(title="NPS - CYBER - TA", css=CUSTOM_CSS) as demo:
             repo_dir = gr.Textbox(value="docs", label="Docs folder (PDF/DOCX/PPTX)")
             chroma_path = gr.Textbox(value="chroma_db", label="Chroma DB path")
         with gr.Row():
-            embed_provider = gr.Radio(choices=["ollama", "openai", "onnx"], value="ollama", label="Embedding provider")
-            embed_model = gr.Textbox(value="nomic-embed-text:latest", label="Embedding model")
+            embed_provider = gr.Radio(choices=["ollama", "openai", "onnx"], value="openai", label="Embedding provider")
+            embed_model = gr.Textbox(value="text-embedding-3-small", label="Embedding model")
             embed_dimensions_auto = gr.Textbox(value="", label="Embedding dim (auto)", interactive=False)
             collection_preview = gr.Textbox(value="", label="Collection (auto)", interactive=False)
             top_k = gr.Slider(1, 10, value=4, step=1, label="Top-K")
